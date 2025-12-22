@@ -2,42 +2,103 @@
 
 # MonTime.io Agent Installer
 # One-command install for Ubuntu/Debian systems
-# Single command install -- sudo bash -c "$(curl -sL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/install-montime-agent.sh)" -- YOUR_TOKEN_HERE https://montime-mauve.vercel.app
+# Usage:
+# sudo bash -c "$(curl -sL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/install-montime-agent.sh)"
 
 set -e
 
 echo "🚀 Installing MonTime.io Monitoring Agent..."
 
-# Check for root
+# ─────────────────────────────────────────────────────────────
+# Root check
+# ─────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
    echo "❌ This script must be run as root (use sudo)"
    exit 1
 fi
 
-# Default values (change these or pass as args)
-SERVER_TOKEN="${1:-YOUR_TOKEN_HERE}"
-SERVER_URL="${2:-https://montime-mauve.vercel.app}"
+# ─────────────────────────────────────────────────────────────
+# Prompt for server token (interactive)
+# ─────────────────────────────────────────────────────────────
+read -rp "🔑 Enter your server token: " SERVER_TOKEN
 
-if [[ "$SERVER_TOKEN" == "YOUR_TOKEN_HERE" || -z "$SERVER_TOKEN" ]]; then
-    echo "❌ Usage: sudo bash install-montime-agent.sh <YOUR_SERVER_TOKEN> [SERVER_URL]"
-    echo "   Example: sudo bash install-montime-agent.sh abc123def456 https://your-app.vercel.app"
+if [[ -z "$SERVER_TOKEN" ]]; then
+    echo "❌ Server token cannot be empty"
     exit 1
 fi
 
-# Install directory
+# ─────────────────────────────────────────────────────────────
+# Default ingest URL (preview for now)
+# ─────────────────────────────────────────────────────────────
+SERVER_URL="https://montime-mauve.vercel.app/api/metrics/ingest"
+
+echo "🌐 Using ingest URL: $SERVER_URL"
+
+# ─────────────────────────────────────────────────────────────
+# Paths
+# ─────────────────────────────────────────────────────────────
 AGENT_DIR="/opt/montime"
+VENV_DIR="$AGENT_DIR/venv"
+SERVICE_NAME="montime-agent"
+
 mkdir -p "$AGENT_DIR"
+cd "$AGENT_DIR"
 
-# Download latest agent
+# ─────────────────────────────────────────────────────────────
+# System dependencies
+# ─────────────────────────────────────────────────────────────
+echo "📦 Installing system dependencies..."
+apt-get update
+apt-get install -y \
+  python3 \
+  python3-venv \
+  python3-full \
+  curl \
+  ca-certificates
+
+# ─────────────────────────────────────────────────────────────
+# Download agent
+# ─────────────────────────────────────────────────────────────
 echo "📥 Downloading agent..."
-curl -sL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/agent.py -o "$AGENT_DIR/agent.py"
+curl -fL \
+  https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/agent.py \
+  -o "$AGENT_DIR/agent.py"
 
-# Make executable
 chmod +x "$AGENT_DIR/agent.py"
 
-# Create systemd service
+# Sanity check (prevents 404 saves)
+head -n 1 "$AGENT_DIR/agent.py" | grep -q python || {
+  echo "❌ agent.py does not look like a Python file"
+  exit 1
+}
+
+# ─────────────────────────────────────────────────────────────
+# Python virtual environment
+# ─────────────────────────────────────────────────────────────
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "🐍 Creating Python virtual environment..."
+  python3 -m venv "$VENV_DIR"
+fi
+
+# ─────────────────────────────────────────────────────────────
+# Python dependencies
+# ─────────────────────────────────────────────────────────────
+echo "📦 Installing Python dependencies..."
+"$VENV_DIR/bin/pip" install --upgrade pip
+"$VENV_DIR/bin/pip" install psutil requests
+
+# Validate deps
+"$VENV_DIR/bin/python" - <<EOF
+import psutil, requests
+print("deps ok")
+EOF
+
+# ─────────────────────────────────────────────────────────────
+# systemd service
+# ─────────────────────────────────────────────────────────────
 echo "⚙️ Creating systemd service..."
-cat > /etc/systemd/system/montime-agent.service <<EOF
+
+cat > /etc/systemd/system/$SERVICE_NAME.service <<EOF
 [Unit]
 Description=MonTime.io Monitoring Agent
 After=network-online.target
@@ -49,7 +110,7 @@ User=root
 WorkingDirectory=$AGENT_DIR
 Environment="SERVER_TOKEN=$SERVER_TOKEN"
 Environment="SERVER_URL=$SERVER_URL"
-ExecStart=/usr/bin/python3 $AGENT_DIR/agent.py
+ExecStart=$VENV_DIR/bin/python $AGENT_DIR/agent.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -60,11 +121,15 @@ SyslogIdentifier=montime-agent
 WantedBy=multi-user.target
 EOF
 
-# Reload and start
+# ─────────────────────────────────────────────────────────────
+# Enable & start
+# ─────────────────────────────────────────────────────────────
 systemctl daemon-reload
-systemctl enable montime-agent
-systemctl start montime-agent
+systemctl enable $SERVICE_NAME
+systemctl reset-failed $SERVICE_NAME
+systemctl restart $SERVICE_NAME
 
+echo ""
 echo "✅ MonTime.io agent installed and running!"
 echo ""
 echo "🔍 Status: systemctl status montime-agent"
@@ -72,4 +137,4 @@ echo "📋 Logs: journalctl -u montime-agent -f"
 echo "🛑 Stop: systemctl stop montime-agent"
 echo "🔄 Restart: systemctl restart montime-agent"
 echo ""
-echo "Your server is now being monitored at $SERVER_URL"
+echo "📡 Ingest URL: $SERVER_URL"
