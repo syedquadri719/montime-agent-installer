@@ -30,7 +30,7 @@ mkdir -p "$AGENT_DIR"
 
 # Download latest agent
 echo "📥 Downloading agent..."
-curl -sL https://raw.githubusercontent.com/syedquadri719/montime/main/agents/agent.py -o "$AGENT_DIR/agent.py"
+curl -sL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/agent.py -o "$AGENT_DIR/agent.py"
 
 # Make executable
 chmod +x "$AGENT_DIR/agent.py"
