@@ -2,7 +2,7 @@
 
 # MonTime.io Agent Installer
 # One-command install for Ubuntu/Debian systems
-# Single command install -- sudo bash -c "$(curl -sL https://raw.githubusercontent.com/syedquadri719/montime/main/install-montime-agent.sh)" -- YOUR_TOKEN_HERE https://montime-mauve.vercel.app
+# Single command install -- sudo bash -c "$(curl -sL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/install-montime-agent.sh)" -- YOUR_TOKEN_HERE https://montime-mauve.vercel.app
 
 set -e
 
