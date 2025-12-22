@@ -68,8 +68,121 @@ Downloads the latest agent.py
 
 Creates an isolated Python virtual environment at:
 
+```/opt/montime/venv```
+
+Installs required Python dependencies (psutil, requests)
+
+Creates and enables a systemd service named montime-agent
+No manual pip installs are required.
+
+###File Locations
+Component	Path
+Agent code	```/opt/montime/agent.py```
+Python virtualenv	```/opt/montime/venv/```
+Systemd service	```/etc/systemd/system/montime-agent.service```
+Logs	```journalctl -u montime-agent```
+
+###Configuration
+Environment Variables
+
+These are managed automatically by systemd.
+
+Variable	Required	Description
+SERVER_TOKEN	Yes	Unique token identifying the server
+SERVER_URL	No	Metrics ingestion endpoint
+
+###Default Ingest Endpoint
+https://montime-mauve.vercel.app/api/metrics/ingest
 
 
+This will switch to https://montime.io when production is finalized.
 
 
+###Metrics Collected
 
+Every 60 seconds, the agent sends:
+
+CPU usage (%)
+
+Memory usage (%)
+
+Disk usage (%)
+
+Timestamp
+
+Server identity
+
+{
+  "cpu": 42.3,
+  "memory": 68.9,
+  "disk": 37.1
+}
+
+Authorization: Bearer <SERVER_TOKEN>
+Content-Type: application/json
+
+Troubleshooting
+Agent Not Showing Online
+systemctl status montime-agent
+journalctl -u montime-agent -n 50
+
+
+Check environment variables:
+
+systemctl show montime-agent --property=Environment
+
+Agent Crashes on Start
+
+Re-run the installer safely:
+
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/install-montime-agent.sh)"
+
+Test Ingest Endpoint Manually
+curl -X POST https://montime-mauve.vercel.app/api/metrics/ingest \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"cpu":50,"memory":60,"disk":40}'
+
+Uninstallation
+sudo systemctl stop montime-agent
+sudo systemctl disable montime-agent
+sudo rm /etc/systemd/system/montime-agent.service
+sudo systemctl daemon-reload
+sudo rm -rf /opt/montime
+
+Security Notes
+
+Keep your server token secure
+
+HTTPS-only communication
+
+Requires outbound port 443
+
+Runs inside isolated Python virtualenv
+
+Auto-restarts on failure
+
+Roadmap
+
+Agent version reporting
+
+Auto-update support
+
+Debug / dry-run mode
+
+Kubernetes support
+
+AWS integrations
+
+Support
+
+Dashboard: https://montime.io/dashboard
+
+Issues: GitHub Issues
+
+Email: support@montime.io
+
+License
+
+MIT License
+See LICENSE for details.
