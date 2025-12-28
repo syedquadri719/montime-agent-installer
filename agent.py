@@ -23,7 +23,7 @@ except ImportError:
 
 
 SERVER_TOKEN = os.environ.get('SERVER_TOKEN')
-BASE_URL = os.environ.get('BASE_URL', 'https://montime-mauve.vercel.app')
+BASE_URL = os.environ.get('BASE_URL', 'https://www.montime.io')
 PING_HOST = '8.8.8.8'
 INTERVAL = 60
 MAX_RETRIES = 3
