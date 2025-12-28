@@ -18,21 +18,137 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # ─────────────────────────────────────────────────────────────
-# Prompt for server token (interactive)
+# Configuration
 # ─────────────────────────────────────────────────────────────
-read -rp "🔑 Enter your server token: " SERVER_TOKEN
+BASE_URL="${BASE_URL:-https://www.montime.io}"
+INSTALLER_API_URL="$BASE_URL/api/servers/find-or-create"
+INGEST_URL="$BASE_URL/api/metrics/ingest"
 
-if [[ -z "$SERVER_TOKEN" ]]; then
-    echo "❌ Server token cannot be empty"
-    exit 1
+# ─────────────────────────────────────────────────────────────
+# Check for INSTALLER_SECRET_KEY environment variable
+# ─────────────────────────────────────────────────────────────
+if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
+    echo "⚠️  INSTALLER_SECRET_KEY not set in environment"
+    echo "📝 This script supports automatic server registration"
+    echo "💡 Set INSTALLER_SECRET_KEY to enable auto-registration, or"
+    echo "💡 Skip this step by pressing Enter to manually enter server token"
+    echo ""
+    read -rp "🔑 Enter INSTALLER_SECRET_KEY (or press Enter to skip): " INSTALLER_SECRET_KEY
+    
+    if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
+        echo "⏭️  Skipping automatic registration"
+        SKIP_AUTO_REGISTER=true
+    fi
 fi
 
 # ─────────────────────────────────────────────────────────────
-# Default ingest URL (preview for now)
+# Auto-register server (if INSTALLER_SECRET_KEY is provided)
 # ─────────────────────────────────────────────────────────────
-SERVER_URL="https://www.montime.io/api/metrics/ingest"
+if [[ "$SKIP_AUTO_REGISTER" != "true" && -n "$INSTALLER_SECRET_KEY" ]]; then
+    echo "🔐 Auto-registering server with Montime..."
+    
+    # Get tenant ID
+    if [[ -z "$TENANT_ID" ]]; then
+        read -rp "🏢 Enter your tenant ID (UUID): " TENANT_ID
+        
+        if [[ -z "$TENANT_ID" ]]; then
+            echo "❌ Tenant ID is required for automatic registration"
+            exit 1
+        fi
+        
+        # Basic UUID validation
+        if ! echo "$TENANT_ID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -i; then
+            echo "❌ Invalid tenant ID format. Please provide a valid UUID."
+            exit 1
+        fi
+    fi
+    
+    # Get hostname automatically
+    HOSTNAME=$(hostname 2>/dev/null || echo "")
+    if [[ -z "$HOSTNAME" ]]; then
+        read -rp "🖥️  Enter server hostname: " HOSTNAME
+        if [[ -z "$HOSTNAME" ]]; then
+            echo "❌ Hostname is required"
+            exit 1
+        fi
+    else
+        echo "🖥️  Detected hostname: $HOSTNAME"
+    fi
+    
+    # Call find-or-create API
+    echo "📡 Registering server..."
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+        -H "x-installer-key: $INSTALLER_SECRET_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"tenant_id\":\"$TENANT_ID\",\"hostname\":\"$HOSTNAME\"}" \
+        "$INSTALLER_API_URL" 2>&1)
+    
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+    
+    if [[ "$HTTP_CODE" == "200" ]]; then
+        # Extract API key from response
+        if command -v jq &> /dev/null; then
+            SERVER_TOKEN=$(echo "$BODY" | jq -r '.api_key')
+            SERVER_ID=$(echo "$BODY" | jq -r '.id')
+            CREATED=$(echo "$BODY" | jq -r '.created')
+        else
+            # Fallback: use grep and sed if jq is not available
+            SERVER_TOKEN=$(echo "$BODY" | grep -o '"api_key":"[^"]*' | sed 's/"api_key":"//')
+            SERVER_ID=$(echo "$BODY" | grep -o '"id":"[^"]*' | sed 's/"id":"//')
+            CREATED=$(echo "$BODY" | grep -o '"created":[^,}]*' | grep -o '[tf][ru][el][us]')
+        fi
+        
+        if [[ -z "$SERVER_TOKEN" ]] || [[ "$SERVER_TOKEN" == "null" ]]; then
+            echo "❌ Failed to extract API key from response"
+            echo "Response: $BODY"
+            exit 1
+        fi
+        
+        if [[ "$CREATED" == "true" ]]; then
+            echo "✅ Server registered successfully (new server created)"
+        else
+            echo "✅ Server found (using existing registration)"
+        fi
+        echo "🆔 Server ID: $SERVER_ID"
+    else
+        echo "⚠️  Failed to auto-register server (HTTP $HTTP_CODE)"
+        case "$HTTP_CODE" in
+            401)
+                echo "   Authentication failed. Check your INSTALLER_SECRET_KEY."
+                ;;
+            404)
+                echo "   Tenant not found. Check your tenant ID."
+                ;;
+            403)
+                echo "   Tenant access is suspended. Contact your administrator."
+                ;;
+            400)
+                echo "   Invalid request. Check tenant_id and hostname."
+                ;;
+            *)
+                echo "   Response: $BODY"
+                ;;
+        esac
+        echo ""
+        echo "📝 Falling back to manual token entry..."
+        SKIP_AUTO_REGISTER=true
+    fi
+fi
 
-echo "🌐 Using ingest URL: $SERVER_URL"
+# ─────────────────────────────────────────────────────────────
+# Prompt for server token (if not auto-registered)
+# ─────────────────────────────────────────────────────────────
+if [[ "$SKIP_AUTO_REGISTER" == "true" ]] || [[ -z "$SERVER_TOKEN" ]]; then
+    read -rp "🔑 Enter your server token: " SERVER_TOKEN
+    
+    if [[ -z "$SERVER_TOKEN" ]]; then
+        echo "❌ Server token cannot be empty"
+        exit 1
+    fi
+fi
+
+echo "🌐 Using ingest URL: $INGEST_URL"
 
 # ─────────────────────────────────────────────────────────────
 # Paths
@@ -94,6 +210,17 @@ print("deps ok")
 EOF
 
 # ─────────────────────────────────────────────────────────────
+# Create config file (optional, for agent reference)
+# ─────────────────────────────────────────────────────────────
+cat > "$AGENT_DIR/config.json" <<EOF
+{
+  "api_key": "$SERVER_TOKEN",
+  "api_url": "$INGEST_URL",
+  "interval": 60
+}
+EOF
+
+# ─────────────────────────────────────────────────────────────
 # systemd service
 # ─────────────────────────────────────────────────────────────
 echo "⚙️ Creating systemd service..."
@@ -109,7 +236,7 @@ Type=simple
 User=root
 WorkingDirectory=$AGENT_DIR
 Environment="SERVER_TOKEN=$SERVER_TOKEN"
-Environment="SERVER_URL=$SERVER_URL"
+Environment="SERVER_URL=$INGEST_URL"
 ExecStart=$VENV_DIR/bin/python $AGENT_DIR/agent.py
 Restart=always
 RestartSec=10
@@ -137,4 +264,7 @@ echo "📋 Logs: journalctl -u montime-agent -f"
 echo "🛑 Stop: systemctl stop montime-agent"
 echo "🔄 Restart: systemctl restart montime-agent"
 echo ""
-echo "📡 Ingest URL: $SERVER_URL"
+echo "📡 Ingest URL: $INGEST_URL"
+if [[ -n "$SERVER_ID" ]]; then
+    echo "🆔 Server ID: $SERVER_ID"
+fi
