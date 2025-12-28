@@ -21,7 +21,7 @@ fi
 # Configuration
 # ─────────────────────────────────────────────────────────────
 BASE_URL="${BASE_URL:-https://www.montime.io}"
-INSTALLER_API_URL="$BASE_URL/api/servers/"
+INSTALLER_API_URL="$BASE_URL/api/servers"
 INGEST_URL="$BASE_URL/api/metrics/ingest"
 
 # ─────────────────────────────────────────────────────────────
