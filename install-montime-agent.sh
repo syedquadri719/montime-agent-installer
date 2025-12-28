@@ -25,42 +25,34 @@ INSTALLER_API_URL="$BASE_URL/api/servers/find-or-create"
 INGEST_URL="$BASE_URL/api/metrics/ingest"
 
 # ─────────────────────────────────────────────────────────────
-# Check for INSTALLER_SECRET_KEY environment variable
+# Prompt for installer credentials
 # ─────────────────────────────────────────────────────────────
-if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
-    echo "⚠️  INSTALLER_SECRET_KEY not set in environment"
-    echo "📝 This script supports automatic server registration"
-    echo "💡 Set INSTALLER_SECRET_KEY to enable auto-registration, or"
-    echo "💡 Skip this step by pressing Enter to manually enter server token"
-    echo ""
-    read -rp "🔑 Enter INSTALLER_SECRET_KEY (or press Enter to skip): " INSTALLER_SECRET_KEY
-    
-    if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
-        echo "⏭️  Skipping automatic registration"
-        SKIP_AUTO_REGISTER=true
-    fi
-fi
+echo ""
+echo "📋 Server Registration"
+echo "─────────────────────────────────────────────────────"
+echo "This script can automatically register your server with Montime."
+echo "You can either:"
+echo "  1. Provide installer key and tenant ID for automatic registration"
+echo "  2. Skip and manually enter a server token"
+echo ""
 
-# ─────────────────────────────────────────────────────────────
-# Auto-register server (if INSTALLER_SECRET_KEY is provided)
-# ─────────────────────────────────────────────────────────────
-if [[ "$SKIP_AUTO_REGISTER" != "true" && -n "$INSTALLER_SECRET_KEY" ]]; then
-    echo "🔐 Auto-registering server with Montime..."
+# Prompt for installer key
+read -rp "🔑 Enter installer key (or press Enter to skip auto-registration): " INSTALLER_SECRET_KEY
+
+# Only prompt for tenant ID if installer key was provided
+if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
+    # Prompt for tenant ID
+    read -rp "🏢 Enter your tenant ID (UUID): " TENANT_ID
     
-    # Get tenant ID
     if [[ -z "$TENANT_ID" ]]; then
-        read -rp "🏢 Enter your tenant ID (UUID): " TENANT_ID
-        
-        if [[ -z "$TENANT_ID" ]]; then
-            echo "❌ Tenant ID is required for automatic registration"
-            exit 1
-        fi
-        
-        # Basic UUID validation
-        if ! echo "$TENANT_ID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -i; then
-            echo "❌ Invalid tenant ID format. Please provide a valid UUID."
-            exit 1
-        fi
+        echo "❌ Tenant ID is required for automatic registration"
+        exit 1
+    fi
+    
+    # Basic UUID validation
+    if ! echo "$TENANT_ID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -i; then
+        echo "❌ Invalid tenant ID format. Please provide a valid UUID."
+        exit 1
     fi
     
     # Get hostname automatically
@@ -75,8 +67,9 @@ if [[ "$SKIP_AUTO_REGISTER" != "true" && -n "$INSTALLER_SECRET_KEY" ]]; then
         echo "🖥️  Detected hostname: $HOSTNAME"
     fi
     
-    # Call find-or-create API
-    echo "📡 Registering server..."
+    # Call find-or-create API using the prompted values
+    echo ""
+    echo "📡 Registering server with Montime..."
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
         -H "x-installer-key: $INSTALLER_SECRET_KEY" \
         -H "Content-Type: application/json" \
@@ -111,11 +104,13 @@ if [[ "$SKIP_AUTO_REGISTER" != "true" && -n "$INSTALLER_SECRET_KEY" ]]; then
             echo "✅ Server found (using existing registration)"
         fi
         echo "🆔 Server ID: $SERVER_ID"
+        echo "🔑 API Key: ${SERVER_TOKEN:0:20}..."
+        echo ""
     else
         echo "⚠️  Failed to auto-register server (HTTP $HTTP_CODE)"
         case "$HTTP_CODE" in
             401)
-                echo "   Authentication failed. Check your INSTALLER_SECRET_KEY."
+                echo "   Authentication failed. Check your installer key."
                 ;;
             404)
                 echo "   Tenant not found. Check your tenant ID."
@@ -131,15 +126,14 @@ if [[ "$SKIP_AUTO_REGISTER" != "true" && -n "$INSTALLER_SECRET_KEY" ]]; then
                 ;;
         esac
         echo ""
-        echo "📝 Falling back to manual token entry..."
-        SKIP_AUTO_REGISTER=true
+        echo "❌ Automatic registration failed. Please try again or use manual token entry."
+        exit 1
     fi
-fi
-
-# ─────────────────────────────────────────────────────────────
-# Prompt for server token (if not auto-registered)
-# ─────────────────────────────────────────────────────────────
-if [[ "$SKIP_AUTO_REGISTER" == "true" ]] || [[ -z "$SERVER_TOKEN" ]]; then
+else
+    # Manual token entry
+    echo ""
+    echo "⏭️  Skipping automatic registration"
+    echo ""
     read -rp "🔑 Enter your server token: " SERVER_TOKEN
     
     if [[ -z "$SERVER_TOKEN" ]]; then
