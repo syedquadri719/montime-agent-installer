@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import os
 import sys
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 import time
 import json
 import subprocess
