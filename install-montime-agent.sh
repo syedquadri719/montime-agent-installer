@@ -213,7 +213,6 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl reset-failed $SERVICE_NAME || true
 systemctl enable $SERVICE_NAME >/dev/null
 systemctl restart $SERVICE_NAME
 
