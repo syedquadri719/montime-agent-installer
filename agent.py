@@ -23,7 +23,7 @@ except ImportError:
 
 
 SERVER_TOKEN = os.environ.get('SERVER_TOKEN')
-BASE_URL = os.environ.get('BASE_URL', 'https://www.montime.io')
+BASE_URL = os.environ.get('BASE_URL', 'https://montime-mauve.vercel.app')
 PING_HOST = '8.8.8.8'
 INTERVAL = 60
 MAX_RETRIES = 3
@@ -49,6 +49,69 @@ def get_disk_usage():
     return round(disk.percent, 2)
 
 
+def detect_os():
+    """Detect OS information (Linux or Windows).
+    Returns: (os_type, os_name, os_version) tuple, with None for unavailable values.
+    """
+    os_type = None
+    os_name = None
+    os_version = None
+    
+    try:
+        if sys.platform.startswith('linux'):
+            os_type = 'linux'
+            # Try /etc/os-release (most reliable for Linux)
+            try:
+                with open('/etc/os-release', 'r') as f:
+                    content = f.read()
+                    for line in content.split('\n'):
+                        if line.startswith('PRETTY_NAME='):
+                            os_name = line.split('=', 1)[1].strip().strip('"').strip("'")
+                        elif line.startswith('NAME=') and not os_name:
+                            os_name = line.split('=', 1)[1].strip().strip('"').strip("'")
+                        elif line.startswith('ID=') and not os_name:
+                            os_name = line.split('=', 1)[1].strip().strip('"').strip("'")
+                        elif line.startswith('VERSION_ID='):
+                            os_version = line.split('=', 1)[1].strip().strip('"').strip("'")
+                        elif line.startswith('VERSION=') and not os_version:
+                            # Try to extract version number
+                            version_str = line.split('=', 1)[1].strip().strip('"').strip("'")
+                            import re
+                            match = re.search(r'\d+\.\d+', version_str)
+                            if match:
+                                os_version = match.group(0)
+            except (IOError, OSError):
+                pass
+        
+        elif sys.platform.startswith('win'):
+            os_type = 'windows'
+            # Use platform module for Windows
+            try:
+                import platform
+                os_name = platform.system()  # "Windows"
+                # Try to get Windows version
+                os_version = platform.release()  # "10", "Server2019", etc.
+                # Try to get more detailed version
+                try:
+                    import winreg
+                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 
+                                       r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+                    product_name = winreg.QueryValueEx(key, "ProductName")[0]
+                    if product_name:
+                        os_name = product_name
+                    winreg.CloseKey(key)
+                except (ImportError, OSError, WindowsError):
+                    pass
+            except Exception:
+                pass
+    
+    except Exception:
+        # If detection fails, return None values (agent continues)
+        pass
+    
+    return (os_type, os_name, os_version)
+
+
 def check_connectivity():
     try:
         result = subprocess.run(
@@ -62,7 +125,18 @@ def check_connectivity():
         return 'down'
 
 
+# Cache OS detection (detect once, reuse)
+_detected_os_cache = None
+
 def send_metrics(cpu, memory, disk, status):
+    global _detected_os_cache
+    
+    # Detect OS once and cache it
+    if _detected_os_cache is None:
+        _detected_os_cache = detect_os()
+    
+    os_type, os_name, os_version = _detected_os_cache
+    
     url = f"{BASE_URL}/api/metrics/ingest"
     headers = {
         'Content-Type': 'application/json',
@@ -74,6 +148,14 @@ def send_metrics(cpu, memory, disk, status):
         'disk': disk,
         'status': status
     }
+    
+    # Add OS fields if detected
+    if os_type:
+        payload['os_type'] = os_type
+    if os_name:
+        payload['os_name'] = os_name
+    if os_version:
+        payload['os_version'] = os_version
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
