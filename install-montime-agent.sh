@@ -26,7 +26,7 @@ BASE_URL="${BASE_URL:-https://www.montime.io}"
 INSTALLER_API_URL="$BASE_URL/api/servers"
 INGEST_URL="$BASE_URL/api/metrics/ingest"
 
-GITHUB_REPO="syedquadri719/montime"
+GITHUB_REPO="syedquadri719/montime-agent-installer"
 AGENTS_PATH="agents"
 GITHUB_API_URL="https://api.github.com/repos/$GITHUB_REPO/contents/$AGENTS_PATH"
 DEFAULT_AGENT_VERSION="v1.1.0"
