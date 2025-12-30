@@ -30,11 +30,11 @@ ENV_DIR="/etc/montime"
 ENV_FILE="$ENV_DIR/agent.env"
 SERVICE_NAME="montime-agent"
 
-# Input: CLI args take priority
+# Input
 INSTALLER_SECRET_KEY="${1:-}"
 TENANT_ID="${2:-}"
 
-# If no installer key, fall back to interactive
+# Prompt if needed
 if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
   echo "📋 Server Registration"
   echo "────────────────────────────────────────────"
@@ -47,7 +47,6 @@ fi
 SERVER_TOKEN=""
 
 if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
-  # Ensure tenant ID
   if [[ -z "$TENANT_ID" ]]; then
     read -rp "🏢 Enter tenant ID (UUID): " TENANT_ID
   fi
@@ -57,38 +56,34 @@ if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
     exit 1
   fi
 
-  # Get hostname/display name
-  SUGGESTED_NAME=$(hostname -f 2>/dev/null || hostname 2>/dev/null || "unknown")
-  if [[ "$SUGGESTED_NAME" == "unknown" ]]; then
-    read -rp "🖥️ Enter server name: " SUGGESTED_NAME
+  # Use hostname as display_name
+  DISPLAY_NAME=$(hostname -f 2>/dev/null || hostname 2>/dev/null || "unknown")
+  if [[ "$DISPLAY_NAME" == "unknown" ]]; then
+    read -rp "🖥️ Enter server name: " DISPLAY_NAME
   else
-    echo "🖥️ Detected hostname: $SUGGESTED_NAME"
-    if [[ -z "$1" || -z "$2" ]]; then  # Only prompt if interactive
-      read -rp "Use '$SUGGESTED_NAME' as server name? (Y/n): " USE_IT
-      if [[ "$USE_IT" =~ ^[Nn]$ ]]; then
-        read -rp "Enter custom server name: " SUGGESTED_NAME
-      fi
+    echo "🖥️ Detected hostname: $DISPLAY_NAME"
+    # Only prompt if interactive mode
+    if [[ -z "$1" || -z "$2" ]]; then
+      read -rp "Use '$DISPLAY_NAME' as server name? (Y/n): " USE_IT
+      [[ "$USE_IT" =~ ^[Nn]$ ]] && read -rp "Enter custom server name: " DISPLAY_NAME
     fi
   fi
 
-  if [[ -z "$SUGGESTED_NAME" ]]; then
-    echo "❌ Server name required"
-    exit 1
-  fi
+  [[ -z "$DISPLAY_NAME" ]] && { echo "❌ Server name required"; exit 1; }
 
   echo ""
-  echo "📡 Registering server '$SUGGESTED_NAME'..."
+  echo "📡 Registering server '$DISPLAY_NAME'..."
 
   HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H "x-installer-key: $INSTALLER_SECRET_KEY" \
     -H "Content-Type: application/json" \
-    -d "{\"tenant_id\":\"$TENANT_ID\",\"display_name\":\"$SUGGESTED_NAME\"}" \
+    -d "{\"tenant_id\":\"$TENANT_ID\",\"display_name\":\"$DISPLAY_NAME\"}" \
     "$INSTALLER_API_URL")
 
   BODY=$(curl -s -X POST \
     -H "x-installer-key: $INSTALLER_SECRET_KEY" \
     -H "Content-Type: application/json" \
-    -d "{\"tenant_id\":\"$TENANT_ID\",\"display_name\":\"$SUGGESTED_NAME\"}" \
+    -d "{\"tenant_id\":\"$TENANT_ID\",\"display_name\":\"$DISPLAY_NAME\"}" \
     "$INSTALLER_API_URL")
 
   if [[ "$HTTP_CODE" == "200" ]]; then
@@ -96,11 +91,7 @@ if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
     SERVER_ID=$(echo "$BODY" | jq -r '.id')
     CREATED=$(echo "$BODY" | jq -r '.created')
 
-    if [[ "$CREATED" == "true" ]]; then
-      echo "✅ New server created!"
-    else
-      echo "✅ Connected to existing server"
-    fi
+    [[ "$CREATED" == "true" ]] && echo "✅ New server created!" || echo "✅ Connected to existing server"
     echo "🆔 Server ID: $SERVER_ID"
     echo "🔑 API Key: ${SERVER_TOKEN:0:20}..."
   else
@@ -113,21 +104,18 @@ else
   read -rp "🔑 Enter server token: " SERVER_TOKEN
 fi
 
-if [[ -z "$SERVER_TOKEN" ]]; then
-  echo "❌ Server token required"
-  exit 1
-fi
-# ─────────────────────────────────────────────────────────────
-# Agent version selection
-# ─────────────────────────────────────────────────────────────
+[[ -z "$SERVER_TOKEN" ]] && { echo "❌ Server token required"; exit 1; }
+
+echo "🌐 Using ingest URL: $INGEST_URL"
+echo ""
+
+# ——— Agent version selection (your excellent code — unchanged) ———
 echo "🔍 Fetching available agent versions..."
 VERSIONS_JSON=$(curl -fsSL "$GITHUB_API_URL" || true)
 if [[ -z "$VERSIONS_JSON" ]]; then
   AGENT_VERSION="$DEFAULT_AGENT_VERSION"
 else
-  mapfile -t VERSIONS < <(
-    echo "$VERSIONS_JSON" | jq -r '.[] | select(.type=="dir") | .name' | sort -V
-  )
+  mapfile -t VERSIONS < <(echo "$VERSIONS_JSON" | jq -r '.[] | select(.type=="dir") | .name' | sort -V)
   if [[ ${#VERSIONS[@]} -eq 0 ]]; then
     AGENT_VERSION="$DEFAULT_AGENT_VERSION"
   else
@@ -151,9 +139,7 @@ fi
 echo "✅ Using agent version: $AGENT_VERSION"
 echo ""
 
-# ─────────────────────────────────────────────────────────────
-# Install dependencies
-# ─────────────────────────────────────────────────────────────
+# ——— Rest of installation (unchanged) ———
 mkdir -p "$AGENT_DIR" "$ENV_DIR"
 cd "$AGENT_DIR"
 
@@ -161,19 +147,12 @@ echo "📦 Installing system dependencies..."
 apt-get update -qq
 apt-get install -y python3 python3-venv python3-full curl ca-certificates jq > /dev/null
 
-# ─────────────────────────────────────────────────────────────
-# Download agent
-# ─────────────────────────────────────────────────────────────
 AGENT_URL="https://raw.githubusercontent.com/$GITHUB_REPO/main/agents/$AGENT_VERSION/agent.py"
 echo "📥 Downloading agent v$AGENT_VERSION"
 curl -fL "$AGENT_URL" -o agent.py
 chmod +x agent.py
-
 echo "$AGENT_VERSION" > agent_version
 
-# ─────────────────────────────────────────────────────────────
-# Python environment
-# ─────────────────────────────────────────────────────────────
 if [[ ! -d "$VENV_DIR" ]]; then
   echo "🐍 Creating Python venv..."
   python3 -m venv "$VENV_DIR"
@@ -183,9 +162,6 @@ echo "📦 Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
 "$VENV_DIR/bin/pip" install --quiet psutil requests
 
-# ─────────────────────────────────────────────────────────────
-# Environment file
-# ─────────────────────────────────────────────────────────────
 cat > "$ENV_FILE" <<EOF
 SERVER_TOKEN=$SERVER_TOKEN
 BASE_URL=$BASE_URL
@@ -194,16 +170,12 @@ AGENT_VERSION=$AGENT_VERSION
 EOF
 chmod 600 "$ENV_FILE"
 
-# ─────────────────────────────────────────────────────────────
-# systemd service
-# ─────────────────────────────────────────────────────────────
 echo "⚙️ Creating systemd service..."
 cat > /etc/systemd/system/$SERVICE_NAME.service <<EOF
 [Unit]
 Description=MonTime.io Monitoring Agent
 After=network-online.target
 Wants=network-online.target
-
 [Service]
 Type=simple
 User=root
@@ -215,7 +187,6 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=montime-agent
-
 [Install]
 WantedBy=multi-user.target
 EOF
