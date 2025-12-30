@@ -213,7 +213,9 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+systemctl reset-failed montime-agent
 systemctl enable --now $SERVICE_NAME >/dev/null
+systemctl restart montime-agent
 
 echo ""
 echo "✅ MonTime Agent Installed Successfully!"
