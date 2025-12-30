@@ -4,18 +4,19 @@
 #
 # Usage:
 # sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/install-montime-agent.sh)"
-# sudo ./install-montime-agent.sh "your-installer-key" "your-tenant-uuid"
-set -e
+# sudo ./install-montime-agent.sh "installer-key" "tenant-uuid"
 
-echo "🚀 Installing MonTime.io Monitoring Agent..."
+set -euo pipefail
+
+echo "🚀 Installing MonTime.io Monitoring Agent"
 echo ""
 
 # ─────────────────────────────────────────────────────────────
 # Root check
 # ─────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
-   echo "❌ This script must be run as root (use sudo)"
-   exit 1
+  echo "❌ This script must be run as root (use sudo)"
+  exit 1
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -25,163 +26,173 @@ BASE_URL="${BASE_URL:-https://www.montime.io}"
 INSTALLER_API_URL="$BASE_URL/api/servers"
 INGEST_URL="$BASE_URL/api/metrics/ingest"
 
-# ─────────────────────────────────────────────────────────────
-# Input: CLI args, env vars, or interactive
-# ─────────────────────────────────────────────────────────────
-INSTALLER_SECRET_KEY="${1:-$INSTALLER_SECRET_KEY}"
-TENANT_ID="${2:-$TENANT_ID}"
+GITHUB_REPO="syedquadri719/montime"
+AGENTS_PATH="agents"
+GITHUB_API_URL="https://api.github.com/repos/$GITHUB_REPO/contents/$AGENTS_PATH"
+DEFAULT_AGENT_VERSION="v1.1.0"
 
-if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
-    echo "📋 Server Registration"
-    echo "─────────────────────────────────────────────────────"
-    echo "1. Auto-register with installer key + tenant ID"
-    echo "2. Manual token entry"
-    echo ""
-    read -rp "🔑 Enter installer key (Enter to skip auto): " INSTALLER_SECRET_KEY
-fi
-
-if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
-    if [[ -z "$TENANT_ID" ]]; then
-        read -rp "🏢 Enter tenant ID (UUID): " TENANT_ID
-    fi
-
-    if [[ -z "$TENANT_ID" ]]; then
-        echo "❌ Tenant ID required for auto-registration"
-        exit 1
-    fi
-
-    # UUID validation
-    if ! echo "$TENANT_ID" | grep -qE '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
-        echo "❌ Invalid tenant ID format"
-        exit 1
-    fi
-
-    # Hostname
-    HOSTNAME=$(hostname -f 2>/dev/null || hostname 2>/dev/null || "unknown")
-    if [[ "$HOSTNAME" == "unknown" || -z "$HOSTNAME" ]]; then
-        read -rp "🖥️ Enter server hostname: " HOSTNAME
-        if [[ -z "$HOSTNAME" ]]; then
-            echo "❌ Hostname required"
-            exit 1
-        fi
-    else
-        echo "🖥️ Detected hostname: $HOSTNAME"
-    fi
-
-    echo ""
-    echo "📡 Registering server with Montime..."
-
-    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-        -H "x-installer-key: $INSTALLER_SECRET_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"tenant_id\":\"$TENANT_ID\",\"hostname\":\"$HOSTNAME\"}" \
-        "$INSTALLER_API_URL" 2>&1)
-
-    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-    BODY=$(echo "$RESPONSE" | sed '$d')
-
-    if [[ "$HTTP_CODE" == "200" ]]; then
-        SERVER_TOKEN=$(echo "$BODY" | jq -r '.api_key // empty')
-        SERVER_ID=$(echo "$BODY" | jq -r '.id // empty')
-        CREATED=$(echo "$BODY" | jq -r '.created // "false"')
-
-        if [[ -z "$SERVER_TOKEN" || "$SERVER_TOKEN" == "null" ]]; then
-            echo "❌ Failed to get API key"
-            echo "Response: $BODY"
-            exit 1
-        fi
-
-        if [[ "$CREATED" == "true" ]]; then
-            echo "✅ New server '$HOSTNAME' created!"
-        else
-            echo "✅ Found existing server '$HOSTNAME'!"
-        fi
-        echo "🆔 Server ID: $SERVER_ID"
-        echo "🔑 API Key: ${SERVER_TOKEN:0:20}..."
-        echo ""
-    elif [[ "$HTTP_CODE" == "409" ]]; then
-        # Duplicate detected (future-proof for RPC 409)
-        echo "⚠️ A server with this name already exists!"
-        read -rp "Do you want to merge with existing? (y/n): " MERGE
-        if [[ "$MERGE" =~ ^[Yy]$ ]]; then
-            echo "🔄 Merging with existing server..."
-            # Future: Call merge API
-            echo "✅ Merged successfully (placeholder)"
-        else
-            echo "❌ Skipping auto-registration. Using manual entry."
-            read -rp "🔑 Enter server token: " SERVER_TOKEN
-            if [[ -z "$SERVER_TOKEN" ]]; then
-                echo "❌ Token required"
-                exit 1
-            fi
-        fi
-    else
-        echo "⚠️ Registration failed (HTTP $HTTP_CODE)"
-        echo "Response: $BODY"
-        echo "❌ Falling back to manual entry."
-        read -rp "🔑 Enter server token: " SERVER_TOKEN
-        if [[ -z "$SERVER_TOKEN" ]]; then
-            echo "❌ Token required"
-            exit 1
-        fi
-    fi
-else
-    echo "⏭️ Skipping auto-registration"
-    read -rp "🔑 Enter server token: " SERVER_TOKEN
-    if [[ -z "$SERVER_TOKEN" ]]; then
-        echo "❌ Token required"
-        exit 1
-    fi
-fi
-
-echo "🌐 Using ingest URL: $INGEST_URL"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# Agent Installation (rest unchanged)
-# ─────────────────────────────────────────────────────────────
 AGENT_DIR="/opt/montime"
 VENV_DIR="$AGENT_DIR/venv"
 SERVICE_NAME="montime-agent"
 
+# ─────────────────────────────────────────────────────────────
+# Input: installer key + tenant ID
+# ─────────────────────────────────────────────────────────────
+INSTALLER_SECRET_KEY="${1:-${INSTALLER_SECRET_KEY:-}}"
+TENANT_ID="${2:-${TENANT_ID:-}}"
+
+if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
+  echo "📋 Server Registration"
+  echo "────────────────────────────────────────────"
+  echo "1) Auto-register with installer key"
+  echo "2) Manual token entry"
+  echo ""
+  read -rp "🔑 Enter installer key (or press Enter to skip): " INSTALLER_SECRET_KEY
+fi
+
+if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
+  if [[ -z "$TENANT_ID" ]]; then
+    read -rp "🏢 Enter tenant ID (UUID): " TENANT_ID
+  fi
+
+  if ! [[ "$TENANT_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+    echo "❌ Invalid tenant ID format"
+    exit 1
+  fi
+
+  HOSTNAME=$(hostname -f 2>/dev/null || hostname || true)
+  if [[ -z "$HOSTNAME" ]]; then
+    read -rp "🖥️ Enter server hostname: " HOSTNAME
+  else
+    echo "🖥️ Detected hostname: $HOSTNAME"
+  fi
+
+  echo ""
+  echo "📡 Registering server with MonTime..."
+
+  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+    -H "x-installer-key: $INSTALLER_SECRET_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"tenant_id\":\"$TENANT_ID\",\"hostname\":\"$HOSTNAME\"}" \
+    "$INSTALLER_API_URL")
+
+  HTTP_CODE=$(tail -n1 <<<"$RESPONSE")
+  BODY=$(sed '$d' <<<"$RESPONSE")
+
+  if [[ "$HTTP_CODE" == "200" ]]; then
+    SERVER_TOKEN=$(jq -r '.api_key' <<<"$BODY")
+    SERVER_ID=$(jq -r '.id' <<<"$BODY")
+
+    echo "✅ Server registered"
+    echo "🆔 Server ID: $SERVER_ID"
+  else
+    echo "⚠️ Auto-registration failed (HTTP $HTTP_CODE)"
+    read -rp "🔑 Enter server token manually: " SERVER_TOKEN
+  fi
+else
+  read -rp "🔑 Enter server token: " SERVER_TOKEN
+fi
+
+if [[ -z "$SERVER_TOKEN" ]]; then
+  echo "❌ Server token required"
+  exit 1
+fi
+
+echo ""
+echo "🌐 Ingest URL: $INGEST_URL"
+echo ""
+
+# ─────────────────────────────────────────────────────────────
+# Agent Version Selection
+# ─────────────────────────────────────────────────────────────
+echo "🔍 Fetching available agent versions..."
+
+VERSIONS_JSON=$(curl -fsSL "$GITHUB_API_URL" || true)
+
+if [[ -z "$VERSIONS_JSON" ]]; then
+  AGENT_VERSION="$DEFAULT_AGENT_VERSION"
+else
+  mapfile -t VERSIONS < <(
+    echo "$VERSIONS_JSON" | jq -r '.[] | select(.type=="dir") | .name' | sort -V
+  )
+
+  if [[ ${#VERSIONS[@]} -eq 0 ]]; then
+    AGENT_VERSION="$DEFAULT_AGENT_VERSION"
+  else
+    echo ""
+    echo "📦 Available Agent Versions"
+    echo "────────────────────────────────────────────"
+    for i in "${!VERSIONS[@]}"; do
+      printf "%2d) %s\n" "$((i+1))" "${VERSIONS[$i]}"
+    done
+    echo ""
+    read -rp "👉 Select version [default: latest]: " CHOICE
+
+    if [[ -z "$CHOICE" ]]; then
+      AGENT_VERSION="${VERSIONS[-1]}"
+    elif [[ "$CHOICE" =~ ^[0-9]+$ ]] && ((CHOICE >= 1 && CHOICE <= ${#VERSIONS[@]})); then
+      AGENT_VERSION="${VERSIONS[$((CHOICE-1))]}"
+    else
+      AGENT_VERSION="${VERSIONS[-1]}"
+    fi
+  fi
+fi
+
+echo "✅ Using agent version: $AGENT_VERSION"
+echo ""
+
+# ─────────────────────────────────────────────────────────────
+# Install dependencies
+# ─────────────────────────────────────────────────────────────
 mkdir -p "$AGENT_DIR"
 cd "$AGENT_DIR"
 
 echo "📦 Installing system dependencies..."
 apt-get update -qq
-apt-get install -y python3 python3-venv python3-full curl ca-certificates > /dev/null
+apt-get install -y python3 python3-venv python3-full curl ca-certificates jq > /dev/null
 
-echo "📥 Downloading agent..."
-curl -fL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/agent.py -o agent.py
+# ─────────────────────────────────────────────────────────────
+# Download agent
+# ─────────────────────────────────────────────────────────────
+AGENT_URL="https://raw.githubusercontent.com/$GITHUB_REPO/main/agents/$AGENT_VERSION/agent.py"
+
+echo "📥 Downloading agent from:"
+echo "   $AGENT_URL"
+
+curl -fL "$AGENT_URL" -o agent.py
 chmod +x agent.py
 
-head -n 1 agent.py | grep -q python || {
-    echo "❌ Invalid agent.py"
-    exit 1
-}
+echo "$AGENT_VERSION" > agent_version
 
+# ─────────────────────────────────────────────────────────────
+# Python environment
+# ─────────────────────────────────────────────────────────────
 if [[ ! -d "$VENV_DIR" ]]; then
-    echo "🐍 Creating venv..."
-    python3 -m venv "$VENV_DIR"
+  echo "🐍 Creating Python venv..."
+  python3 -m venv "$VENV_DIR"
 fi
 
-echo "📦 Installing Python deps..."
+echo "📦 Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
 "$VENV_DIR/bin/pip" install --quiet psutil requests
 
-"$VENV_DIR/bin/python" - <<EOF >/dev/null
-import psutil, requests
-EOF
-
+# ─────────────────────────────────────────────────────────────
+# Config
+# ─────────────────────────────────────────────────────────────
 cat > config.json <<EOF
 {
   "api_key": "$SERVER_TOKEN",
   "api_url": "$INGEST_URL",
-  "interval": 60
+  "interval": 60,
+  "agent_version": "$AGENT_VERSION"
 }
 EOF
 
+# ─────────────────────────────────────────────────────────────
+# systemd service
+# ─────────────────────────────────────────────────────────────
 echo "⚙️ Creating systemd service..."
+
 cat > /etc/systemd/system/$SERVICE_NAME.service <<EOF
 [Unit]
 Description=MonTime.io Monitoring Agent
@@ -192,13 +203,9 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=$AGENT_DIR
-Environment="SERVER_TOKEN=$SERVER_TOKEN"
-Environment="SERVER_URL=$INGEST_URL"
 ExecStart=$VENV_DIR/bin/python $AGENT_DIR/agent.py
 Restart=always
 RestartSec=10
-StandardOutput=journal
-StandardError=journal
 SyslogIdentifier=montime-agent
 
 [Install]
@@ -209,13 +216,13 @@ systemctl daemon-reload
 systemctl enable --now $SERVICE_NAME >/dev/null
 
 echo ""
-echo "✅ Agent installed and running!"
+echo "✅ MonTime Agent Installed Successfully!"
 echo ""
-echo "🔍 Status: systemctl status montime-agent"
-echo "📋 Logs: journalctl -u montime-agent -f"
-echo "🛑 Stop: systemctl stop montime-agent"
+echo "🔍 Status:  systemctl status montime-agent"
+echo "📋 Logs:    journalctl -u montime-agent -f"
 echo "🔄 Restart: systemctl restart montime-agent"
+echo "🛑 Stop:    systemctl stop montime-agent"
 echo ""
-echo "📡 Ingest URL: $INGEST_URL"
-[[ -n "$SERVER_ID" ]] && echo "🆔 Server ID: $SERVER_ID"
+echo "📦 Agent Version: $AGENT_VERSION"
+[[ -n "${SERVER_ID:-}" ]] && echo "🆔 Server ID: $SERVER_ID"
 echo ""
