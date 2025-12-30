@@ -9,17 +9,13 @@ set -euo pipefail
 echo "🚀 Installing MonTime.io Monitoring Agent"
 echo ""
 
-# ─────────────────────────────────────────────────────────────
 # Root check
-# ─────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
   echo "❌ This script must be run as root (use sudo)"
   exit 1
 fi
 
-# ─────────────────────────────────────────────────────────────
 # Configuration
-# ─────────────────────────────────────────────────────────────
 BASE_URL="${BASE_URL:-https://www.montime.io}"
 INSTALLER_API_URL="$BASE_URL/api/servers"
 INGEST_URL="$BASE_URL/api/metrics/ingest"
@@ -34,12 +30,11 @@ ENV_DIR="/etc/montime"
 ENV_FILE="$ENV_DIR/agent.env"
 SERVICE_NAME="montime-agent"
 
-# ─────────────────────────────────────────────────────────────
-# Input: CLI args, env vars, or interactive
-# ─────────────────────────────────────────────────────────────
-INSTALLER_SECRET_KEY="${1:-${INSTALLER_SECRET_KEY:-}}"
-TENANT_ID="${2:-${TENANT_ID:-}}"
+# Input: CLI args take priority
+INSTALLER_SECRET_KEY="${1:-}"
+TENANT_ID="${2:-}"
 
+# If no installer key, fall back to interactive
 if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
   echo "📋 Server Registration"
   echo "────────────────────────────────────────────"
@@ -49,7 +44,10 @@ if [[ -z "$INSTALLER_SECRET_KEY" ]]; then
   read -rp "🔑 Enter installer key (or press Enter to skip): " INSTALLER_SECRET_KEY
 fi
 
+SERVER_TOKEN=""
+
 if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
+  # Ensure tenant ID
   if [[ -z "$TENANT_ID" ]]; then
     read -rp "🏢 Enter tenant ID (UUID): " TENANT_ID
   fi
@@ -59,15 +57,17 @@ if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
     exit 1
   fi
 
-  # Use hostname as both hostname and display_name suggestion
+  # Get hostname/display name
   SUGGESTED_NAME=$(hostname -f 2>/dev/null || hostname 2>/dev/null || "unknown")
   if [[ "$SUGGESTED_NAME" == "unknown" ]]; then
-    read -rp "🖥️ Enter server name (display name): " SUGGESTED_NAME
+    read -rp "🖥️ Enter server name: " SUGGESTED_NAME
   else
     echo "🖥️ Detected hostname: $SUGGESTED_NAME"
-    read -rp "Use '$SUGGESTED_NAME' as server name? (Y/n): " USE_SUGGESTED
-    if [[ "$USE_SUGGESTED" =~ ^[Nn]$ ]]; then
-      read -rp "Enter custom server name: " SUGGESTED_NAME
+    if [[ -z "$1" || -z "$2" ]]; then  # Only prompt if interactive
+      read -rp "Use '$SUGGESTED_NAME' as server name? (Y/n): " USE_IT
+      if [[ "$USE_IT" =~ ^[Nn]$ ]]; then
+        read -rp "Enter custom server name: " SUGGESTED_NAME
+      fi
     fi
   fi
 
@@ -77,9 +77,8 @@ if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
   fi
 
   echo ""
-  echo "📡 Registering server '$SUGGESTED_NAME' with Montime..."
+  echo "📡 Registering server '$SUGGESTED_NAME'..."
 
-  # Reliable curl: separate status and body
   HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H "x-installer-key: $INSTALLER_SECRET_KEY" \
     -H "Content-Type: application/json" \
@@ -93,47 +92,31 @@ if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
     "$INSTALLER_API_URL")
 
   if [[ "$HTTP_CODE" == "200" ]]; then
-    SERVER_TOKEN=$(echo "$BODY" | jq -r '.api_key // empty')
-    SERVER_ID=$(echo "$BODY" | jq -r '.id // empty')
-    CREATED=$(echo "$BODY" | jq -r '.created // "false"')
-
-    if [[ -z "$SERVER_TOKEN" || "$SERVER_TOKEN" == "null" ]]; then
-      echo "❌ Failed to extract API key"
-      echo "Response: $BODY"
-      exit 1
-    fi
+    SERVER_TOKEN=$(echo "$BODY" | jq -r '.api_key')
+    SERVER_ID=$(echo "$BODY" | jq -r '.id')
+    CREATED=$(echo "$BODY" | jq -r '.created')
 
     if [[ "$CREATED" == "true" ]]; then
-      echo "✅ New server '$SUGGESTED_NAME' created!"
+      echo "✅ New server created!"
     else
-      echo "✅ Found existing server '$SUGGESTED_NAME' — connected!"
+      echo "✅ Connected to existing server"
     fi
     echo "🆔 Server ID: $SERVER_ID"
     echo "🔑 API Key: ${SERVER_TOKEN:0:20}..."
-    echo ""
   else
     echo "⚠️ Auto-registration failed (HTTP $HTTP_CODE)"
     echo "Response: $BODY"
-    echo ""
-    echo "❌ Falling back to manual token entry."
-    read -rp "🔑 Enter server token manually: " SERVER_TOKEN
-    if [[ -z "$SERVER_TOKEN" ]]; then
-      echo "❌ Token required"
-      exit 1
-    fi
+    echo "Falling back to manual token"
+    read -rp "🔑 Enter server token: " SERVER_TOKEN
   fi
 else
-  echo "⏭️ Skipping auto-registration"
   read -rp "🔑 Enter server token: " SERVER_TOKEN
-  if [[ -z "$SERVER_TOKEN" ]]; then
-    echo "❌ Token required"
-    exit 1
-  fi
 fi
 
-echo "🌐 Using ingest URL: $INGEST_URL"
-echo ""
-
+if [[ -z "$SERVER_TOKEN" ]]; then
+  echo "❌ Server token required"
+  exit 1
+fi
 # ─────────────────────────────────────────────────────────────
 # Agent version selection
 # ─────────────────────────────────────────────────────────────
