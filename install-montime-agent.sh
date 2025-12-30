@@ -4,7 +4,6 @@
 #
 # Usage:
 # sudo bash install-montime-agent.sh [installer-key] [tenant-uuid]
-
 set -euo pipefail
 
 echo "🚀 Installing MonTime.io Monitoring Agent"
@@ -24,7 +23,6 @@ fi
 BASE_URL="${BASE_URL:-https://www.montime.io}"
 INSTALLER_API_URL="$BASE_URL/api/servers"
 INGEST_URL="$BASE_URL/api/metrics/ingest"
-
 GITHUB_REPO="syedquadri719/montime-agent-installer"
 AGENTS_PATH="agents"
 GITHUB_API_URL="https://api.github.com/repos/$GITHUB_REPO/contents/$AGENTS_PATH"
@@ -37,7 +35,7 @@ ENV_FILE="$ENV_DIR/agent.env"
 SERVICE_NAME="montime-agent"
 
 # ─────────────────────────────────────────────────────────────
-# Input
+# Input: CLI args, env vars, or interactive
 # ─────────────────────────────────────────────────────────────
 INSTALLER_SECRET_KEY="${1:-${INSTALLER_SECRET_KEY:-}}"
 TENANT_ID="${2:-${TENANT_ID:-}}"
@@ -56,66 +54,97 @@ if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
     read -rp "🏢 Enter tenant ID (UUID): " TENANT_ID
   fi
 
-  if ! [[ "$TENANT_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  if ! [[ "$TENANT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
     echo "❌ Invalid tenant ID format"
     exit 1
   fi
 
-  HOSTNAME=$(hostname -f 2>/dev/null || hostname || true)
-  if [[ -z "$HOSTNAME" ]]; then
-    read -rp "🖥️ Enter server hostname: " HOSTNAME
+  # Use hostname as both hostname and display_name suggestion
+  SUGGESTED_NAME=$(hostname -f 2>/dev/null || hostname 2>/dev/null || "unknown")
+  if [[ "$SUGGESTED_NAME" == "unknown" ]]; then
+    read -rp "🖥️ Enter server name (display name): " SUGGESTED_NAME
   else
-    echo "🖥️ Detected hostname: $HOSTNAME"
+    echo "🖥️ Detected hostname: $SUGGESTED_NAME"
+    read -rp "Use '$SUGGESTED_NAME' as server name? (Y/n): " USE_SUGGESTED
+    if [[ "$USE_SUGGESTED" =~ ^[Nn]$ ]]; then
+      read -rp "Enter custom server name: " SUGGESTED_NAME
+    fi
+  fi
+
+  if [[ -z "$SUGGESTED_NAME" ]]; then
+    echo "❌ Server name required"
+    exit 1
   fi
 
   echo ""
-  echo "📡 Registering server with MonTime..."
+  echo "📡 Registering server '$SUGGESTED_NAME' with Montime..."
 
-  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+  # Reliable curl: separate status and body
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H "x-installer-key: $INSTALLER_SECRET_KEY" \
     -H "Content-Type: application/json" \
-    -d "{\"tenant_id\":\"$TENANT_ID\",\"hostname\":\"$HOSTNAME\"}" \
+    -d "{\"tenant_id\":\"$TENANT_ID\",\"display_name\":\"$SUGGESTED_NAME\"}" \
     "$INSTALLER_API_URL")
 
-  HTTP_CODE=$(tail -n1 <<<"$RESPONSE")
-  BODY=$(sed '$d' <<<"$RESPONSE")
+  BODY=$(curl -s -X POST \
+    -H "x-installer-key: $INSTALLER_SECRET_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"tenant_id\":\"$TENANT_ID\",\"display_name\":\"$SUGGESTED_NAME\"}" \
+    "$INSTALLER_API_URL")
 
   if [[ "$HTTP_CODE" == "200" ]]; then
-    SERVER_TOKEN=$(jq -r '.api_key' <<<"$BODY")
-    SERVER_ID=$(jq -r '.id' <<<"$BODY")
-    echo "✅ Server registered"
+    SERVER_TOKEN=$(echo "$BODY" | jq -r '.api_key // empty')
+    SERVER_ID=$(echo "$BODY" | jq -r '.id // empty')
+    CREATED=$(echo "$BODY" | jq -r '.created // "false"')
+
+    if [[ -z "$SERVER_TOKEN" || "$SERVER_TOKEN" == "null" ]]; then
+      echo "❌ Failed to extract API key"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    if [[ "$CREATED" == "true" ]]; then
+      echo "✅ New server '$SUGGESTED_NAME' created!"
+    else
+      echo "✅ Found existing server '$SUGGESTED_NAME' — connected!"
+    fi
     echo "🆔 Server ID: $SERVER_ID"
+    echo "🔑 API Key: ${SERVER_TOKEN:0:20}..."
+    echo ""
   else
     echo "⚠️ Auto-registration failed (HTTP $HTTP_CODE)"
+    echo "Response: $BODY"
+    echo ""
+    echo "❌ Falling back to manual token entry."
     read -rp "🔑 Enter server token manually: " SERVER_TOKEN
+    if [[ -z "$SERVER_TOKEN" ]]; then
+      echo "❌ Token required"
+      exit 1
+    fi
   fi
 else
+  echo "⏭️ Skipping auto-registration"
   read -rp "🔑 Enter server token: " SERVER_TOKEN
+  if [[ -z "$SERVER_TOKEN" ]]; then
+    echo "❌ Token required"
+    exit 1
+  fi
 fi
 
-if [[ -z "$SERVER_TOKEN" ]]; then
-  echo "❌ Server token required"
-  exit 1
-fi
-
-echo ""
-echo "🌐 Ingest URL: $INGEST_URL"
+echo "🌐 Using ingest URL: $INGEST_URL"
 echo ""
 
 # ─────────────────────────────────────────────────────────────
 # Agent version selection
 # ─────────────────────────────────────────────────────────────
 echo "🔍 Fetching available agent versions..."
-
 VERSIONS_JSON=$(curl -fsSL "$GITHUB_API_URL" || true)
-
 if [[ -z "$VERSIONS_JSON" ]]; then
   AGENT_VERSION="$DEFAULT_AGENT_VERSION"
 else
   mapfile -t VERSIONS < <(
     echo "$VERSIONS_JSON" | jq -r '.[] | select(.type=="dir") | .name' | sort -V
   )
-
   if [[ ${#VERSIONS[@]} -eq 0 ]]; then
     AGENT_VERSION="$DEFAULT_AGENT_VERSION"
   else
@@ -127,7 +156,6 @@ else
     done
     echo ""
     read -rp "👉 Select version [default: latest]: " CHOICE
-
     if [[ -z "$CHOICE" ]]; then
       AGENT_VERSION="${VERSIONS[-1]}"
     elif [[ "$CHOICE" =~ ^[0-9]+$ ]] && ((CHOICE >= 1 && CHOICE <= ${#VERSIONS[@]})); then
@@ -137,7 +165,6 @@ else
     fi
   fi
 fi
-
 echo "✅ Using agent version: $AGENT_VERSION"
 echo ""
 
@@ -155,12 +182,10 @@ apt-get install -y python3 python3-venv python3-full curl ca-certificates jq > /
 # Download agent
 # ─────────────────────────────────────────────────────────────
 AGENT_URL="https://raw.githubusercontent.com/$GITHUB_REPO/main/agents/$AGENT_VERSION/agent.py"
-
-echo "📥 Downloading agent:"
-echo "   $AGENT_URL"
-
+echo "📥 Downloading agent v$AGENT_VERSION"
 curl -fL "$AGENT_URL" -o agent.py
 chmod +x agent.py
+
 echo "$AGENT_VERSION" > agent_version
 
 # ─────────────────────────────────────────────────────────────
@@ -176,7 +201,7 @@ echo "📦 Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --quiet psutil requests
 
 # ─────────────────────────────────────────────────────────────
-# Environment file (CRITICAL FIX)
+# Environment file
 # ─────────────────────────────────────────────────────────────
 cat > "$ENV_FILE" <<EOF
 SERVER_TOKEN=$SERVER_TOKEN
@@ -184,14 +209,12 @@ BASE_URL=$BASE_URL
 INGEST_URL=$INGEST_URL
 AGENT_VERSION=$AGENT_VERSION
 EOF
-
 chmod 600 "$ENV_FILE"
 
 # ─────────────────────────────────────────────────────────────
 # systemd service
 # ─────────────────────────────────────────────────────────────
 echo "⚙️ Creating systemd service..."
-
 cat > /etc/systemd/system/$SERVICE_NAME.service <<EOF
 [Unit]
 Description=MonTime.io Monitoring Agent
@@ -206,6 +229,8 @@ EnvironmentFile=$ENV_FILE
 ExecStart=$VENV_DIR/bin/python $AGENT_DIR/agent.py
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=montime-agent
 
 [Install]
@@ -213,17 +238,16 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable $SERVICE_NAME >/dev/null
-systemctl restart $SERVICE_NAME
+systemctl enable --now $SERVICE_NAME >/dev/null
 
 echo ""
-echo "✅ MonTime Agent Installed Successfully!"
+echo "✅ MonTime Agent v$AGENT_VERSION Installed Successfully!"
 echo ""
-echo "🔍 Status:  systemctl status $SERVICE_NAME"
-echo "📋 Logs:    journalctl -u $SERVICE_NAME -f"
+echo "🔍 Status: systemctl status $SERVICE_NAME"
+echo "📋 Logs: journalctl -u $SERVICE_NAME -f"
 echo "🔄 Restart: systemctl restart $SERVICE_NAME"
-echo "🛑 Stop:    systemctl stop $SERVICE_NAME"
+echo "🛑 Stop: systemctl stop $SERVICE_NAME"
 echo ""
-echo "📦 Agent Version: $AGENT_VERSION"
+echo "📡 Ingest URL: $INGEST_URL"
 [[ -n "${SERVER_ID:-}" ]] && echo "🆔 Server ID: $SERVER_ID"
 echo ""
