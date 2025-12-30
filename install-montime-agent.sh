@@ -1,10 +1,9 @@
 #!/bin/bash
 # MonTime.io Agent Installer
-# One-command install for Ubuntu/Debian systems
+# Ubuntu / Debian
 #
 # Usage:
-# sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/syedquadri719/montime-agent-installer/main/install-montime-agent.sh)"
-# sudo ./install-montime-agent.sh "installer-key" "tenant-uuid"
+# sudo bash install-montime-agent.sh [installer-key] [tenant-uuid]
 
 set -euo pipefail
 
@@ -33,10 +32,12 @@ DEFAULT_AGENT_VERSION="v1.1.0"
 
 AGENT_DIR="/opt/montime"
 VENV_DIR="$AGENT_DIR/venv"
+ENV_DIR="/etc/montime"
+ENV_FILE="$ENV_DIR/agent.env"
 SERVICE_NAME="montime-agent"
 
 # ─────────────────────────────────────────────────────────────
-# Input: installer key + tenant ID
+# Input
 # ─────────────────────────────────────────────────────────────
 INSTALLER_SECRET_KEY="${1:-${INSTALLER_SECRET_KEY:-}}"
 TENANT_ID="${2:-${TENANT_ID:-}}"
@@ -82,7 +83,6 @@ if [[ -n "$INSTALLER_SECRET_KEY" ]]; then
   if [[ "$HTTP_CODE" == "200" ]]; then
     SERVER_TOKEN=$(jq -r '.api_key' <<<"$BODY")
     SERVER_ID=$(jq -r '.id' <<<"$BODY")
-
     echo "✅ Server registered"
     echo "🆔 Server ID: $SERVER_ID"
   else
@@ -103,7 +103,7 @@ echo "🌐 Ingest URL: $INGEST_URL"
 echo ""
 
 # ─────────────────────────────────────────────────────────────
-# Agent Version Selection
+# Agent version selection
 # ─────────────────────────────────────────────────────────────
 echo "🔍 Fetching available agent versions..."
 
@@ -144,7 +144,7 @@ echo ""
 # ─────────────────────────────────────────────────────────────
 # Install dependencies
 # ─────────────────────────────────────────────────────────────
-mkdir -p "$AGENT_DIR"
+mkdir -p "$AGENT_DIR" "$ENV_DIR"
 cd "$AGENT_DIR"
 
 echo "📦 Installing system dependencies..."
@@ -156,12 +156,11 @@ apt-get install -y python3 python3-venv python3-full curl ca-certificates jq > /
 # ─────────────────────────────────────────────────────────────
 AGENT_URL="https://raw.githubusercontent.com/$GITHUB_REPO/main/agents/$AGENT_VERSION/agent.py"
 
-echo "📥 Downloading agent from:"
+echo "📥 Downloading agent:"
 echo "   $AGENT_URL"
 
 curl -fL "$AGENT_URL" -o agent.py
 chmod +x agent.py
-
 echo "$AGENT_VERSION" > agent_version
 
 # ─────────────────────────────────────────────────────────────
@@ -177,16 +176,16 @@ echo "📦 Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --quiet psutil requests
 
 # ─────────────────────────────────────────────────────────────
-# Config
+# Environment file (CRITICAL FIX)
 # ─────────────────────────────────────────────────────────────
-cat > config.json <<EOF
-{
-  "api_key": "$SERVER_TOKEN",
-  "api_url": "$INGEST_URL",
-  "interval": 60,
-  "agent_version": "$AGENT_VERSION"
-}
+cat > "$ENV_FILE" <<EOF
+SERVER_TOKEN=$SERVER_TOKEN
+BASE_URL=$BASE_URL
+INGEST_URL=$INGEST_URL
+AGENT_VERSION=$AGENT_VERSION
 EOF
+
+chmod 600 "$ENV_FILE"
 
 # ─────────────────────────────────────────────────────────────
 # systemd service
@@ -203,6 +202,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=$AGENT_DIR
+EnvironmentFile=$ENV_FILE
 ExecStart=$VENV_DIR/bin/python $AGENT_DIR/agent.py
 Restart=always
 RestartSec=10
@@ -213,17 +213,17 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl reset-failed montime-agent
-systemctl enable --now $SERVICE_NAME >/dev/null
-systemctl restart montime-agent
+systemctl reset-failed $SERVICE_NAME || true
+systemctl enable $SERVICE_NAME >/dev/null
+systemctl restart $SERVICE_NAME
 
 echo ""
 echo "✅ MonTime Agent Installed Successfully!"
 echo ""
-echo "🔍 Status:  systemctl status montime-agent"
-echo "📋 Logs:    journalctl -u montime-agent -f"
-echo "🔄 Restart: systemctl restart montime-agent"
-echo "🛑 Stop:    systemctl stop montime-agent"
+echo "🔍 Status:  systemctl status $SERVICE_NAME"
+echo "📋 Logs:    journalctl -u $SERVICE_NAME -f"
+echo "🔄 Restart: systemctl restart $SERVICE_NAME"
+echo "🛑 Stop:    systemctl stop $SERVICE_NAME"
 echo ""
 echo "📦 Agent Version: $AGENT_VERSION"
 [[ -n "${SERVER_ID:-}" ]] && echo "🆔 Server ID: $SERVER_ID"
