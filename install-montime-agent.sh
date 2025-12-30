@@ -9,17 +9,13 @@ set -euo pipefail
 echo "🚀 Installing MonTime.io Monitoring Agent"
 echo ""
 
-# ─────────────────────────────────────────────────────────────
 # Root check
-# ─────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
   echo "❌ This script must be run as root (use sudo)"
   exit 1
 fi
 
-# ─────────────────────────────────────────────────────────────
 # Configuration
-# ─────────────────────────────────────────────────────────────
 BASE_URL="${BASE_URL:-https://www.montime.io}"
 INSTALLER_API_URL="$BASE_URL/api/servers"
 INGEST_URL="$BASE_URL/api/metrics/ingest"
@@ -34,9 +30,7 @@ ENV_DIR="/etc/montime"
 ENV_FILE="$ENV_DIR/agent.env"
 SERVICE_NAME="montime-agent"
 
-# ─────────────────────────────────────────────────────────────
 # Input: CLI args take priority
-# ─────────────────────────────────────────────────────────────
 INSTALLER_SECRET_KEY="${1:-}"
 TENANT_ID="${2:-}"
 
