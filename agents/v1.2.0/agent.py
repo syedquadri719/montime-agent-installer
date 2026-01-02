@@ -8,7 +8,7 @@ import json
 import subprocess
 from datetime import datetime, timezone
 
-AGENT_VERSION = "v1.3.0"
+AGENT_VERSION = "v1.2.0"
 
 # ----------------------------
 # Dependency bootstrap
