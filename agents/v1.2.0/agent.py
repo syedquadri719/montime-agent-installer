@@ -6,9 +6,9 @@ sys.stderr.reconfigure(encoding='utf-8')
 import time
 import json
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 
-AGENT_VERSION = "v1.2.0"
+AGENT_VERSION = "v1.3.0"
 
 # ----------------------------
 # Dependency bootstrap
@@ -33,17 +33,28 @@ PING_HOST = "8.8.8.8"
 INTERVAL = 60
 MAX_RETRIES = 3
 RETRY_DELAY = 5
-METADATA_TIMEOUT = 1  # seconds
+METADATA_TIMEOUT = 1
 
 # ----------------------------
 # Logging
 # ----------------------------
 def log(message):
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {message}", flush=True)
 
+def log_detection(label, value=None, source=None, reason=None):
+    if value:
+        msg = f"{label} detected: {value}"
+        if source:
+            msg += f" (source={source})"
+    else:
+        msg = f"{label} unavailable"
+        if reason:
+            msg += f" (reason={reason})"
+    log(msg)
+
 # ----------------------------
-# Token resolution (CRITICAL FIX)
+# Token resolution
 # ----------------------------
 def load_config_token():
     try:
@@ -56,7 +67,7 @@ SERVER_TOKEN = os.getenv("SERVER_TOKEN") or load_config_token()
 BASE_URL = os.getenv("BASE_URL", DEFAULT_BASE_URL)
 
 if not SERVER_TOKEN:
-    log("ERROR: SERVER_TOKEN not found (env or config.json)")
+    log("ERROR: SERVER_TOKEN not found")
     sys.exit(1)
 
 # ----------------------------
@@ -73,13 +84,13 @@ def get_disk_usage():
 
 def check_connectivity():
     try:
-        result = subprocess.run(
+        r = subprocess.run(
             ["ping", "-c", "1", "-W", "2", PING_HOST],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=3,
         )
-        return "up" if result.returncode == 0 else "down"
+        return "up" if r.returncode == 0 else "down"
     except Exception:
         return "down"
 
@@ -98,22 +109,18 @@ def detect_os():
     try:
         if sys.platform.startswith("linux"):
             os_type = "linux"
-            try:
-                with open("/etc/os-release") as f:
-                    for line in f:
-                        if line.startswith("PRETTY_NAME="):
-                            os_name = line.split("=", 1)[1].strip().strip('"')
-                        elif line.startswith("VERSION_ID="):
-                            os_version = line.split("=", 1)[1].strip().strip('"')
-            except Exception:
-                pass
+            with open("/etc/os-release") as f:
+                for line in f:
+                    if line.startswith("PRETTY_NAME="):
+                        os_name = line.split("=", 1)[1].strip().strip('"')
+                    elif line.startswith("VERSION_ID="):
+                        os_version = line.split("=", 1)[1].strip().strip('"')
 
         elif sys.platform.startswith("win"):
             import platform
             os_type = "windows"
             os_name = platform.system()
             os_version = platform.release()
-
     except Exception:
         pass
 
@@ -121,69 +128,47 @@ def detect_os():
     return _os_cache
 
 # ----------------------------
-# Cloud detection (cached)
+# Cloud detection
 # ----------------------------
 CLOUD_PROVIDER = None
 INSTANCE_TYPE = None
+DETECTION_SOURCE = None
 
 def detect_cloud_provider():
     try:
-        # GCP
-        r = requests.get(
-            "http://metadata.google.internal",
-            headers={"Metadata-Flavor": "Google"},
-            timeout=METADATA_TIMEOUT,
-        )
+        r = requests.get("http://metadata.google.internal", headers={"Metadata-Flavor": "Google"}, timeout=METADATA_TIMEOUT)
         if r.status_code == 200:
-            return "gcp"
-    except requests.RequestException:
+            return "gcp", "metadata"
+    except:
         pass
 
     try:
-        # AWS
-        r = requests.get(
-            "http://169.254.169.254/latest/meta-data/instance-id",
-            timeout=METADATA_TIMEOUT,
-        )
+        r = requests.get("http://169.254.169.254/latest/meta-data/instance-id", timeout=METADATA_TIMEOUT)
         if r.status_code == 200:
-            return "aws"
-    except requests.RequestException:
+            return "aws", "metadata"
+    except:
         pass
 
     try:
-        # Azure
-        r = requests.get(
-            "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
-            headers={"Metadata": "true"},
-            timeout=METADATA_TIMEOUT,
-        )
+        r = requests.get("http://169.254.169.254/metadata/instance?api-version=2021-02-01", headers={"Metadata": "true"}, timeout=METADATA_TIMEOUT)
         if r.status_code == 200 and "compute" in r.text:
-            return "azure"
-    except requests.RequestException:
+            return "azure", "metadata"
+    except:
         pass
 
     try:
-        # DigitalOcean
-        r = requests.get(
-            "http://169.254.169.254/metadata/v1.json",
-            timeout=METADATA_TIMEOUT,
-        )
+        r = requests.get("http://169.254.169.254/metadata/v1.json", timeout=METADATA_TIMEOUT)
         if r.status_code == 200 and "droplet_id" in r.text:
-            return "digitalocean"
-    except requests.RequestException:
+            return "digitalocean", "metadata"
+    except:
         pass
 
-    return "unknown"
+    return "unknown", "unavailable"
 
-def detect_instance_type(provider):
+def detect_instance_type_metadata(provider):
     try:
         if provider == "aws":
-            r = requests.get(
-                "http://169.254.169.254/latest/meta-data/instance-type",
-                timeout=METADATA_TIMEOUT,
-            )
-            return r.text.strip()
-
+            return requests.get("http://169.254.169.254/latest/meta-data/instance-type", timeout=METADATA_TIMEOUT).text.strip()
         if provider == "gcp":
             r = requests.get(
                 "http://metadata.google.internal/computeMetadata/v1/instance/machine-type",
@@ -191,7 +176,6 @@ def detect_instance_type(provider):
                 timeout=METADATA_TIMEOUT,
             )
             return r.text.split("/")[-1]
-
         if provider == "azure":
             r = requests.get(
                 "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
@@ -199,27 +183,43 @@ def detect_instance_type(provider):
                 timeout=METADATA_TIMEOUT,
             )
             return r.json()["compute"]["vmSize"]
+    except:
+        pass
+    return None
+
+def detect_instance_type_heuristic(provider):
+    try:
+        cpu = psutil.cpu_count(logical=True)
+        mem_gb = round(psutil.virtual_memory().total / (1024 ** 3))
 
         if provider == "digitalocean":
-            r = requests.get(
-                "http://169.254.169.254/metadata/v1.json",
-                timeout=METADATA_TIMEOUT,
-            )
-            return r.json().get("size_slug")
-
-    except Exception:
+            return f"s-{cpu}vcpu-{mem_gb}gb"
+    except:
         pass
-
     return None
 
 def initialize_environment():
-    global CLOUD_PROVIDER, INSTANCE_TYPE
-    CLOUD_PROVIDER = detect_cloud_provider()
-    INSTANCE_TYPE = detect_instance_type(CLOUD_PROVIDER)
+    global CLOUD_PROVIDER, INSTANCE_TYPE, DETECTION_SOURCE
 
-    log(f"Cloud provider detected: {CLOUD_PROVIDER}")
-    if INSTANCE_TYPE:
-        log(f"Instance type detected: {INSTANCE_TYPE}")
+    CLOUD_PROVIDER, provider_source = detect_cloud_provider()
+    log_detection("Cloud provider", CLOUD_PROVIDER, provider_source)
+
+    instance = detect_instance_type_metadata(CLOUD_PROVIDER)
+    if instance:
+        INSTANCE_TYPE = instance
+        DETECTION_SOURCE = "metadata"
+        log_detection("Instance type", INSTANCE_TYPE, "metadata")
+    else:
+        heuristic = detect_instance_type_heuristic(CLOUD_PROVIDER)
+        if heuristic:
+            INSTANCE_TYPE = heuristic
+            DETECTION_SOURCE = "heuristic"
+            log_detection("Instance type", INSTANCE_TYPE, "heuristic")
+        else:
+            DETECTION_SOURCE = "unavailable"
+            log_detection("Instance type", None, reason="not_exposed_by_metadata")
+
+    log(f"Metadata payload preview: {{'cloud_provider': {CLOUD_PROVIDER}, 'instance_type': {INSTANCE_TYPE}, 'cloud_detection_source': {DETECTION_SOURCE}}}")
 
 # ----------------------------
 # Send metrics
@@ -235,7 +235,7 @@ def send_metrics(cpu, memory, disk, status):
         "agent_version": AGENT_VERSION,
         "cloud_provider": CLOUD_PROVIDER,
         "instance_type": INSTANCE_TYPE,
-        "cloud_detection_source": "metadata",
+        "cloud_detection_source": DETECTION_SOURCE,
     }
 
     if os_type:
@@ -266,7 +266,7 @@ def send_metrics(cpu, memory, disk, status):
         time.sleep(RETRY_DELAY)
 
 # ----------------------------
-# Main loop
+# Main
 # ----------------------------
 def main():
     log("Montime Agent started")
